@@ -1,10 +1,12 @@
 import json
 from dataclasses import dataclass, field
-from inspect import getclosurevars, signature
+from functools import lru_cache
+from inspect import Signature, getclosurevars, signature
 from pathlib import Path
 from typing import Any, Callable, get_args, get_origin
 
 import falcon
+from falcon.media.validators import jsonschema
 
 from .schema import create_schema, param_type_to_json
 from .utils import AppInfo, TypedRequest, TypedResponse
@@ -20,7 +22,9 @@ class Context:
 
 def _process_schema(s: dict, context: Context):
     # TODO improve
-    new_schema = json.loads(json.dumps(s).replace("#/definitions", "#/components/schemas"))
+    new_schema = json.loads(
+        json.dumps(s).replace("#/definitions", "#/components/schemas")
+    )
 
     for k, v in new_schema.pop("definitions", {}).items():
         if k not in context.schemas:
@@ -29,40 +33,57 @@ def _process_schema(s: dict, context: Context):
     return new_schema
 
 
-def _gen(
+@lru_cache(1)
+def _jsonschema_validate_params() -> tuple[str, str]:
+    s = signature(jsonschema.validate)
+    return tuple(p for p in s.parameters)[:2]
+
+
+def _try_get_jsonschema_from_decorator(
+    func: Callable,
+) -> tuple[dict | None, dict | None]:
+    nonlocals = getclosurevars(func).nonlocals
+    return tuple(nonlocals.get(p) for p in _jsonschema_validate_params())
+
+
+def _infer_jsonschema(
+    context: Context, func_sign: Signature
+) -> tuple[dict | None, dict | None]:
+    req_param, res_param, *_ = list(func_sign.parameters)
+
+    res = []
+
+    for param, exp_origin in [(req_param, TypedRequest), (res_param, TypedResponse)]:
+        annotation = func_sign.parameters[param].annotation
+        if get_origin(annotation) == exp_origin:
+            res.append(create_schema(context.schemas, get_args(annotation)[0]))
+        else:
+            res.append(None)
+
+    return tuple(res)
+
+
+def _generate_method_info(
     context: Context,
-    route_def: dict[str, Any],
     http_method: str,
     func: Callable,
     vars: list[str],
+    *,
+    add_parameters: bool,
 ):
     obj = {
         "description": func.__doc__,
         "responses": {"200": {}},
     }
 
-    nl = getclosurevars(func).nonlocals
-    req_schema = nl.get("req_schema")
-    resp_schema = nl.get("resp_schema")
-
-    s = signature(func)
-    k = list(s.parameters)
-    req_param = k[0]
-    res_param = k[1]
     req = res = None
+    func_sign = signature(func)
 
-    if req_schema is not None or resp_schema is not None:
-        req = _process_schema(req_schema, context)
-        res = _process_schema(resp_schema, context)
-
+    jsonschemas = _try_get_jsonschema_from_decorator(func)
+    if any(s is not None for s in jsonschemas):
+        [req, res] = [_process_schema(s, context) for s in jsonschemas]
     else:
-        rqa = s.parameters[req_param].annotation
-        if get_origin(rqa) == TypedRequest:
-            req = create_schema(context.schemas, get_args(rqa)[0])
-
-        rsa = s.parameters[res_param].annotation
-        if get_origin(rsa) == TypedResponse:
-            res = create_schema(context.schemas, get_args(rsa)[0])
+        req, res = _infer_jsonschema(context, func_sign)
 
     if req:
         obj["requestBody"] = {
@@ -77,30 +98,31 @@ def _gen(
             "content": {"application/json": {"schema": res}},
         }
 
-    route_def[http_method.lower()] = obj
+    ret = {http_method.lower(): obj}
 
-    _add_parameters(route_def, func, vars)
+    if add_parameters:
+        ret["parameters"] = _generate_route_parameters(func_sign, vars)
 
-
-def _add_parameters(route_def, func, vars):
-    if vars:
-        s = signature(func)
-        route_def["parameters"] = [
-            {
-                "name": var,
-                "in": "path",
-                "description": var,
-                "required": True,
-                "schema": {
-                    "type": param_type_to_json(s.parameters[var].annotation),
-                },
-                "style": "simple",
-            }
-            for var in vars
-        ]
+    return ret
 
 
-def _generate_paths(cur, context: Context, path=[], vars=[]):
+def _generate_route_parameters(func_sign: Signature, vars: list[str]):
+    return [
+        {
+            "name": var,
+            "in": "path",
+            "description": var,
+            "required": True,
+            "schema": {
+                "type": param_type_to_json(func_sign.parameters[var].annotation),
+            },
+            "style": "simple",
+        }
+        for var in vars
+    ]
+
+
+def _generate_paths(cur, context: Context, path, vars):
     if cur.is_var:
         name = cur.var_name
         vars = vars + [name]
@@ -120,7 +142,18 @@ def _generate_paths(cur, context: Context, path=[], vars=[]):
             ):
                 continue
 
-            _gen(context, route_def, http_method, func, vars)
+            route_def.update(
+                _generate_method_info(
+                    context,
+                    http_method,
+                    func,
+                    vars,
+                    add_parameters="parameters" in route_def,
+                )
+            )
+
+        if not route_def.get("parameters"):
+            route_def.pop("parameters", None)
 
         context.paths["/" + "/".join(path)] = route_def
 
@@ -131,7 +164,7 @@ def _generate_paths(cur, context: Context, path=[], vars=[]):
 def _generate_swagger(app: falcon.App, app_info: AppInfo):
     context = Context()
     for root in app._router._roots:
-        _generate_paths(root, context)
+        _generate_paths(root, context, [], [])
 
     res = {
         "openapi": "3.0.3",

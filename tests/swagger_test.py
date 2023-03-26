@@ -1,10 +1,11 @@
-from pathlib import Path
-import falcon
-
-from falcon_auto_swagger.swagger import _generate_swagger
-from falcon_auto_swagger import AppInfo, TypedRequest
-from falcon.media.validators import jsonschema
 import json
+from pathlib import Path
+
+import falcon
+from falcon.media.validators import jsonschema
+
+from falcon_auto_swagger import AppInfo, TypedRequest
+from falcon_auto_swagger.swagger import _generate_swagger
 
 
 def read_json(path: str) -> dict:
