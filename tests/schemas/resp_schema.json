@@ -1,0 +1,32 @@
+{
+    "$id": "resp_schema",
+    "type": "object",
+    "definitions": {
+        "id": {
+            "type": "object",
+            "properties": {
+                "id1": {
+                    "type": "number"
+                },
+                "n": {
+                    "$ref": "#/definitions/n"
+                }
+            }
+        },
+        "n": {
+            "type": "integer"
+        }
+    },
+    "properties": {
+        "id": {
+            "$ref": "#/definitions/id"
+        },
+        "phone": {
+            "type": "string"
+        },
+        "age": {
+            "type": "integer",
+            "minimum": 0
+        }
+    }
+}
