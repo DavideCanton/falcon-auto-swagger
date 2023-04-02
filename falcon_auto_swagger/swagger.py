@@ -1,19 +1,24 @@
 import json
 from inspect import Signature, signature
 from pathlib import Path
-from typing import Callable, get_args, get_origin
+from typing import Callable, cast, get_args, get_origin
 
 from falcon import App
 from falcon.responders import create_method_not_allowed
 from falcon.routing.compiled import CompiledRouter, CompiledRouterNode
 
-from .schema import create_schema, param_type_to_json, try_get_jsonschema_from_decorator
+from .schema import (
+    converter_to_json_type,
+    create_schema,
+    try_get_jsonschema_from_decorator,
+)
 from .utils import AppInfo, Context, TypedRequest, TypedResponse
 
 _ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
 _NOT_ALLOWED_RESPONDERS = {
     create_method_not_allowed([], asgi=asgi).__name__ for asgi in (True, False)
 }
+_var_type = tuple[str, ...]
 
 
 def _infer_jsonschema(
@@ -41,17 +46,16 @@ def _generate_method_info(
     context: Context,
     http_method: str,
     func: Callable,
-    vars: list[str],
+    vars: list[_var_type],
     *,
     add_parameters: bool,
 ):
     obj = {"description": func.__doc__, "responses": {}}
 
-    func_sign = signature(func)
-
     if jsonschemas := try_get_jsonschema_from_decorator(context, func):
         req, res = jsonschemas
     else:
+        func_sign = signature(func)
         req, res = _infer_jsonschema(context, func_sign)
 
     if req:
@@ -70,12 +74,12 @@ def _generate_method_info(
     ret = {http_method.lower(): obj}
 
     if add_parameters:
-        ret["parameters"] = _generate_route_parameters(func_sign, vars)
+        ret["parameters"] = _generate_route_parameters(vars)
 
     return ret
 
 
-def _generate_route_parameters(func_sign: Signature, vars: list[str]):
+def _generate_route_parameters(vars: list[_var_type]):
     return [
         {
             "name": var,
@@ -85,11 +89,11 @@ def _generate_route_parameters(func_sign: Signature, vars: list[str]):
             "schema": {
                 # TODO infer more type properties from the converter specified in the route
                 # like "id:int(2, min=50)"
-                "type": param_type_to_json(func_sign.parameters[var].annotation),
+                **converter_to_json_type(*rest),
             },
             "style": "simple",
         }
-        for var in vars
+        for var, *rest in vars
     ]
 
 
@@ -97,11 +101,23 @@ def _generate_paths(
     cur: CompiledRouterNode,
     context: Context,
     path: list[str],
-    vars: list[str],
+    vars: list[_var_type],
 ):
+    # TODO check this method logic to avoid unnecessary concatenation of lists
+    # and in general to avoid recursion
+
     if cur.is_var:
-        name = cur.var_name
-        vars = vars + [name]
+        if cur.var_converter_map:
+            # cur.var_converter_map is a list with a single tuple
+            # containing (var name, converter name, converter args csv list)
+            # TODO check if many tuples in this list can appear
+            var = cast(_var_type, cur.var_converter_map[0])
+        else:
+            # if cur.var_converter_map is empty, consider the variable as a string
+            var = cast(_var_type, (cur.var_name, "str"))
+
+        name = var[0]
+        vars = vars + [var]
         part = [f"{{{name}}}"]
     else:
         part = [cur.raw_segment]
@@ -142,7 +158,8 @@ def _generate_paths(
 def _generate_swagger(app: App, app_info: AppInfo):
     context = Context()
     router = app._router
-    # TODO error
+
+    # TODO error if router is not a compiled or check if it works with other routers
     assert isinstance(router, CompiledRouter)
 
     for root in router._roots:

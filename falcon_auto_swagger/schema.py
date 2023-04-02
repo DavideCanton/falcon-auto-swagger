@@ -14,13 +14,19 @@ def _jsonschema_validate_params() -> tuple[str, str]:
     return tuple(p for p in s.parameters)[:2]
 
 
-def param_type_to_json(param: str | type):
-    # TODO extend?
-    match param:
-        case t if t == "int" or issubclass(t, int):
-            return "integer"
+def converter_to_json_type(type: str, *additional: str) -> dict:
+    # TODO extend with converters?
+    match type:
+        case "int":
+            return {"type": "integer"}
+        case "dt":
+            if additional[0] is not None:
+                raise ValueError("Unsupported custom formats")
+            return {"type": "string", "format": "date-time"}
+        case "uuid":
+            return {"type": "string", "format": "uuid"}
         case _:
-            return "string"
+            return {"type": "string"}
 
 
 def type_to_json(param: type):
