@@ -1,5 +1,4 @@
 {
-    "$id": "resp_schema",
     "type": "object",
     "definitions": {
         "id": {

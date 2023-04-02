@@ -1,5 +1,4 @@
 {
-    "$id": "req_schema",
     "title": "Person",
     "type": "object",
     "properties": {

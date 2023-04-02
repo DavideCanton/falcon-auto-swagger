@@ -1,49 +1,19 @@
 import json
-from dataclasses import dataclass, field
-from functools import lru_cache
-from inspect import Signature, getclosurevars, signature
+from inspect import Signature, signature
 from pathlib import Path
-from typing import Any, Callable, get_args, get_origin
+from typing import Callable, get_args, get_origin
 
-import falcon
-from falcon.media.validators import jsonschema
+from falcon import App
+from falcon.responders import create_method_not_allowed
+from falcon.routing.compiled import CompiledRouter, CompiledRouterNode
 
-from .schema import create_schema, param_type_to_json
-from .utils import AppInfo, TypedRequest, TypedResponse
+from .schema import create_schema, param_type_to_json, try_get_jsonschema_from_decorator
+from .utils import AppInfo, Context, TypedRequest, TypedResponse
 
 _ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
-
-
-@dataclass
-class Context:
-    paths: dict = field(default_factory=dict)
-    schemas: dict[str, Any] = field(default_factory=dict)
-
-
-def _process_schema(s: dict, context: Context):
-    # TODO improve
-    new_schema = json.loads(
-        json.dumps(s).replace("#/definitions", "#/components/schemas")
-    )
-
-    for k, v in new_schema.pop("definitions", {}).items():
-        if k not in context.schemas:
-            context.schemas[k] = v
-
-    return new_schema
-
-
-@lru_cache(1)
-def _jsonschema_validate_params() -> tuple[str, str]:
-    s = signature(jsonschema.validate)
-    return tuple(p for p in s.parameters)[:2]
-
-
-def _try_get_jsonschema_from_decorator(
-    func: Callable,
-) -> tuple[dict | None, dict | None]:
-    nonlocals = getclosurevars(func).nonlocals
-    return tuple(nonlocals.get(p) for p in _jsonschema_validate_params())
+_NOT_ALLOWED_RESPONDERS = {
+    create_method_not_allowed([], asgi=asgi).__name__ for asgi in (True, False)
+}
 
 
 def _infer_jsonschema(
@@ -63,6 +33,10 @@ def _infer_jsonschema(
     return tuple(res)
 
 
+def _resp_message_for_status(status: int) -> str:
+    return f"Response for HTTP {status}"
+
+
 def _generate_method_info(
     context: Context,
     http_method: str,
@@ -71,17 +45,12 @@ def _generate_method_info(
     *,
     add_parameters: bool,
 ):
-    obj = {
-        "description": func.__doc__,
-        "responses": {"200": {}},
-    }
+    obj = {"description": func.__doc__, "responses": {}}
 
-    req = res = None
     func_sign = signature(func)
 
-    jsonschemas = _try_get_jsonschema_from_decorator(func)
-    if any(s is not None for s in jsonschemas):
-        [req, res] = [_process_schema(s, context) for s in jsonschemas]
+    if jsonschemas := try_get_jsonschema_from_decorator(context, func):
+        req, res = jsonschemas
     else:
         req, res = _infer_jsonschema(context, func_sign)
 
@@ -94,7 +63,7 @@ def _generate_method_info(
 
     if res:
         obj["responses"]["200"] = {
-            "description": "response",
+            "description": _resp_message_for_status(200),
             "content": {"application/json": {"schema": res}},
         }
 
@@ -114,6 +83,8 @@ def _generate_route_parameters(func_sign: Signature, vars: list[str]):
             "description": var,
             "required": True,
             "schema": {
+                # TODO infer more type properties from the converter specified in the route
+                # like "id:int(2, min=50)"
                 "type": param_type_to_json(func_sign.parameters[var].annotation),
             },
             "style": "simple",
@@ -122,7 +93,12 @@ def _generate_route_parameters(func_sign: Signature, vars: list[str]):
     ]
 
 
-def _generate_paths(cur, context: Context, path, vars):
+def _generate_paths(
+    cur: CompiledRouterNode,
+    context: Context,
+    path: list[str],
+    vars: list[str],
+):
     if cur.is_var:
         name = cur.var_name
         vars = vars + [name]
@@ -132,12 +108,14 @@ def _generate_paths(cur, context: Context, path, vars):
 
     path = path + part
 
-    if cur.method_map:
+    if method_map := cur.method_map:
+        method_map: dict[str, Callable]
+
         route_def = {}
 
-        for http_method, func in cur.method_map.items():
+        for http_method, func in method_map.items():
             if (
-                func.__name__ == "method_not_allowed"
+                func.__name__ in _NOT_ALLOWED_RESPONDERS
                 or http_method not in _ALLOWED_METHODS
             ):
                 continue
@@ -148,7 +126,7 @@ def _generate_paths(cur, context: Context, path, vars):
                     http_method,
                     func,
                     vars,
-                    add_parameters="parameters" in route_def,
+                    add_parameters="parameters" not in route_def,
                 )
             )
 
@@ -161,9 +139,13 @@ def _generate_paths(cur, context: Context, path, vars):
         _generate_paths(child, context, path, vars)
 
 
-def _generate_swagger(app: falcon.App, app_info: AppInfo):
+def _generate_swagger(app: App, app_info: AppInfo):
     context = Context()
-    for root in app._router._roots:
+    router = app._router
+    # TODO error
+    assert isinstance(router, CompiledRouter)
+
+    for root in router._roots:
         _generate_paths(root, context, [], [])
 
     res = {
@@ -181,7 +163,7 @@ def _generate_swagger(app: falcon.App, app_info: AppInfo):
 
 
 def register_swagger(
-    app: falcon.App,
+    app: App,
     app_info: AppInfo,
     static_path: str | Path = "falcon_auto_swagger/static",
     url_prefix: str = "/api/docs/",

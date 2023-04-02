@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Generic, TypeVar
+from dataclasses import dataclass, field
+from typing import Any, Generic, TypeVar
 
 import falcon
 
@@ -20,3 +20,9 @@ class TypedRequest(Generic[T], falcon.Request):
 
 class TypedResponse(Generic[T], falcon.Response):
     pass
+
+
+@dataclass
+class Context:
+    paths: dict = field(default_factory=dict)
+    schemas: dict[str, Any] = field(default_factory=dict)
