@@ -15,11 +15,11 @@ T = TypeVar("T")
 
 
 class TypedRequest(Generic[T], falcon.Request):
-    pass
+    media: T
 
 
 class TypedResponse(Generic[T], falcon.Response):
-    pass
+    media: T
 
 
 @dataclass

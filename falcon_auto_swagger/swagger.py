@@ -182,7 +182,7 @@ def _generate_swagger(app: App, app_info: AppInfo):
 def register_swagger(
     app: App,
     app_info: AppInfo,
-    static_path: str | Path = "falcon_auto_swagger/static",
+    static_path: str | Path,
     url_prefix: str = "/api/docs/",
 ):
     if isinstance(static_path, str):
@@ -190,8 +190,8 @@ def register_swagger(
 
     static_path = static_path.absolute()
 
-    with (static_path / "swagger.json").open("w") as fo:
-        j = _generate_swagger(app, app_info)
-        json.dump(j, fo, indent=4)
+    with (static_path / "swagger.json").open("w") as out_file:
+        swagger_json = _generate_swagger(app, app_info)
+        json.dump(swagger_json, out_file, indent=4)
 
     app.add_static_route(url_prefix, str(static_path), fallback_filename="index.html")
