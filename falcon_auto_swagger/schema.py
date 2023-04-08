@@ -29,19 +29,24 @@ def converter_to_json_type(type: str, *additional: str) -> dict:
             return {"type": "string"}
 
 
-def type_to_json(param: type):
+def _type_to_json(param: type):
     # TODO extend
     match param:
+        # TODO int and float should be generalized to Integral and Real maybe
+        # excluding complex
         case t if issubclass(t, int):
-            return "integer"
+            return ("integer", {})
+        case t if issubclass(t, float):
+            return ("number", {})
         case t if issubclass(t, Sequence):
-            return "array"
+            return ("array", {})
         case _:
-            return "object"
+            return ("object", {})
 
 
 def create_schema(types_index: dict, type: type):
-    if (t := type_to_json(type)) not in {"array", "object"}:
+    t, defs = _type_to_json(type)
+    if not defs:
         return {"type": t}
 
     name = type.__name__
