@@ -4,16 +4,19 @@ from typing import TypedDict, get_args, get_origin
 
 _GT_310 = sys.version_info >= (3, 11)
 
+
 if _GT_310:
-    from typing import NotRequired, Required
+
+    def get_required(class_: type[TypedDict]) -> dict[str, type]:
+        return class_.__required_keys__
+
+    def get_optional(class_: type[TypedDict]) -> dict[str, type]:
+        return class_.__optional_keys__
+
 else:
     from typing_extensions import NotRequired, Required
 
-
-def get_required(class_: type[TypedDict]) -> dict[str, type]:
-    if _GT_310:
-        return class_.__required_keys__
-    else:
+    def get_required(class_: type[TypedDict]) -> dict[str, type]:
         ann = get_annotations(class_)
 
         ret = {}
@@ -28,11 +31,7 @@ def get_required(class_: type[TypedDict]) -> dict[str, type]:
 
         return ret
 
-
-def get_optional(class_: type[TypedDict]) -> dict[str, type]:
-    if _GT_310:
-        return class_.__optional_keys__
-    else:
+    def get_optional(class_: type[TypedDict]) -> dict[str, type]:
         ann = get_annotations(class_)
 
         ret = {}

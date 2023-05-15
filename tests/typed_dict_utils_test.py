@@ -1,6 +1,7 @@
 import sys
 from typing import TypedDict
-from falcon_auto_swagger.typed_dict_utils import get_required, get_optional
+
+from falcon_auto_swagger.typed_dict_utils import get_optional, get_required
 
 _GT_310 = sys.version_info >= (3, 11)
 

@@ -1,9 +1,12 @@
 import json
+from dataclasses import dataclass
 from functools import lru_cache
 from inspect import getclosurevars, signature
-from typing import Callable, Sequence
+from typing import Callable, Sequence, TypedDict, get_args
 
 from falcon.media.validators.jsonschema import validate
+
+from falcon_auto_swagger.typed_dict_utils import get_required
 
 from .utils import Context
 
@@ -29,30 +32,61 @@ def converter_to_json_type(type: str, *additional: str) -> dict:
             return {"type": "string"}
 
 
-def _type_to_json(param: type):
+@dataclass
+class Simple:
+    base_type: str
+
+
+@dataclass
+class Complex:
+    base_type: dict
+    defs: dict
+
+
+def _ref(name):
+    return f"#/components/schemas/{name}"
+
+
+@lru_cache(100)
+def _type_to_json(param: type) -> Simple | Complex:
     # TODO extend
     match param:
         # TODO int and float should be generalized to Integral and Real maybe
         # excluding complex
         case t if issubclass(t, int):
-            return ("integer", {})
+            return Simple("integer")
         case t if issubclass(t, float):
-            return ("number", {})
+            return Simple("number")
         case t if issubclass(t, Sequence):
-            return ("array", {})
+            match _type_to_json(get_args(t)[0]):
+                case Simple(base_type=b):
+                    items = {"type": b}
+                    defs = {}
+                case Complex(defs=defs, base_type=base_type):
+                    items = {"$ref": _ref("foo")}
+            return Complex({"type": "array", "items": items}, defs | {"foo": base_type})
+        case t if issubclass(t, TypedDict):
+            f = get_required(t)
+            return Complex(
+                {
+                    "type": "object",
+                    "properties": {k: {"type": "integer"} for k, v in f.items()},
+                },
+                {},
+            )
         case _:
-            return ("object", {})
+            return Simple("string")
 
 
 def create_schema(types_index: dict, type: type):
-    t, defs = _type_to_json(type)
-    if not defs:
-        return {"type": t}
+    info = _type_to_json(type)
+    if isinstance(info, Simple):
+        return {"type": info.base_type}
 
     name = type.__name__
-    types_index.update({})
+    types_index.update(info.defs)
 
-    return {"$ref": f"#/components/schemas/{name}"}
+    return {"$ref": _ref(name)}
 
 
 def process_schema(s: dict, context: Context) -> dict:
